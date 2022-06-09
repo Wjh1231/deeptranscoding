@@ -47,13 +47,19 @@ class FixedNetworkEnvDiscrete:
         self.a_dim = a_dim
         self.idx = -1
         self.alpha = alpha
+        self.last_select_list = np.zeros(50)
     
     def reset(self):
         self.rand_idx = self.idx#np.random.randint(len(self.all_time))
         self.bw = self.all_bw[self.rand_idx]
         self.tm = self.all_time[self.rand_idx]
         self.ptr = 0#np.random.randint(np.maximum(len(self.tm) - 30, 1))
-        sort_arr = np.sort(self.bw[self.ptr:])
+        # sort_arr = np.sort(self.bw[self.ptr:])
+        if len(self.tm) < 200:
+            self.bw_1 = self.bw*10
+            self.tm_1 = self.tm*10
+            sort_arr = np.sort(self.bw[self.ptr:self.ptr + 200])
+        sort_arr = np.sort(self.bw[self.ptr:self.ptr + 200])
         # self.alpha = 0.
         values, base = np.histogram(sort_arr, bins=S_LEN)
         values = np.array(values, dtype=np.float) / np.sum(values)
@@ -95,13 +101,26 @@ class FixedNetworkEnvDiscrete:
         #  find actual videos and ladders
         vmaf_arr, size_arr = self.videos.step(self.ladder)
         bitrate_ladder = size_arr / 1024. / 1024. * 8. / 4.
-        bw = np.array(self.bw[self.ptr:])
-        tm = np.array(self.tm[self.ptr:])
+        bw = self.bw[self.ptr:self.ptr + 200]
+        tm = self.tm[self.ptr:self.ptr + 200]
+        #print(tm)
+        if len(bw) < 200:
+          bw = bw * 20
+          for j in range(1,5):
+            tm.extend([(i + j*tm[-1] + 1) for i in tm])
+          bw = bw[0:200]
+          tm = tm[0:200]
+          tm = np.sort(tm)
+        bw = np.array(bw)
+        tm = np.array(tm)
+        print(len(tm),len(bw))
         normalized_tm = tm - tm[0]
-        inter_bw = np.interp(np.arange(normalized_tm[0], normalized_tm[-1], 4.0), normalized_tm, bw)
+        inter_bw = np.interp(np.arange(normalized_tm[0], normalized_tm[-1], 1.0), normalized_tm, bw)
+        inter_bw = inter_bw[0:50]
         # util_arr = []
         util_arr = np.zeros(len(bitrate_ladder))
         counter = np.zeros(len(bitrate_ladder))
+        select_list = []
         for _bw in inter_bw:
             _bw = np.clip(_bw, 0., 6.)
             _select_idx = -1
@@ -117,10 +136,12 @@ class FixedNetworkEnvDiscrete:
                 _s_ladder = bitrate_ladder[0]
                 counter[_select_idx] += 1.
                 _r = np.clip(1. - _s_ladder / (_bw + 1e-6), -100., 0.)
+                select_list.append(_s_ladder)
             else:
                 _s_ladder = bitrate_ladder[_select_idx]
                 counter[_select_idx] += 1.
                 _r = np.clip(_s_ladder / (_bw + 1e-6), 0., 1.)
+                select_list.append(_s_ladder)
             util_arr[_select_idx] += _r
         self.state = state
         # to prob
@@ -128,7 +149,11 @@ class FixedNetworkEnvDiscrete:
         counter /= np.sum(counter)
         vmaf_avg = np.dot(counter, vmaf_arr)
         size_mean = self.alpha * 100. * np.sum(bitrate_ladder)
-        rew  = vmaf_avg + util_avg - size_mean
+        #print(len(select_list),len(self.last_select_list))
+        smooth = np.sum(abs(select_list[i] - self.last_select_list[i]) for i in range(len(select_list)))
+        if len(self.ladder) == 6:        
+            self.last_select_list = select_list
+        rew  = vmaf_avg + util_avg - size_mean - smooth
         ret_state = {'network': state, 'video': self.video_feature}
         return ret_state, rew, self.act_idx == self.a_dim, {'util': util_avg, 'size': np.mean(bitrate_ladder) * 100., 'bitrate': s_act * 6000., 'vmaf': vmaf_avg}
 
